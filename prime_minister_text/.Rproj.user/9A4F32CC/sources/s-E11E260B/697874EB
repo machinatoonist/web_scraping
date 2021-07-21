@@ -1,0 +1,29 @@
+{
+    "id": "697874EB",
+    "path": "~/Documents/github/web_scraping/prime_minister_text/scrape_pm_media.R",
+    "project_path": "scrape_pm_media.R",
+    "type": "r_source",
+    "hash": "0",
+    "contents": "",
+    "dirty": true,
+    "created": 1626478065050.0,
+    "source_on_save": false,
+    "relative_order": 2,
+    "properties": {
+        "tempName": "Untitled1",
+        "source_window_id": "",
+        "Source": "Source",
+        "cursorPosition": "240,17",
+        "scrollLine": "235",
+        "docOutlineVisible": "1",
+        "docOutlineSize": "40"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 1626720587,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1626894378548,
+    "read_only": false,
+    "read_only_alternatives": []
+}

@@ -1,0 +1,639 @@
+---
+title: "TidyTemplate"
+date: 2020-02-18
+output: html_output
+---
+
+# TidyTuesday
+
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(tidytuesdayR)
+
+```
+
+# Load the weekly Data
+
+Dowload the weekly data and make available in the `tt` object.
+
+```{r Load}
+
+tt <- tt_load('2020-02-18')
+
+food_carbon_footprint <- tidytuesdayR::tt_load('2020-02-18')[[1]]
+
+```
+
+
+# Readme
+
+Take a look at the readme for the weekly data to get insight on the dataset.
+This includes a data dictionary, source, and a link to an article on the data.
+
+How To Find Countries With Similar Tastes in Food to Your Own (Even If You Might Not Be Going There Any Time Soon).  Using UMAP and K means clustering and a dataset that summarises the quantity of food eaten per person per year by country and food category this task can be achieved in a couple of minutes.  Annual food consumption per person was summarised by the following categories for each of 130 countries:
+ 1 Beef                    
+ 2 Eggs                    
+ 3 Fish                    
+ 4 Lamb & Goat             
+ 5 Milk - inc. cheese      
+ 6 Nuts inc. Peanut Butter 
+ 7 Pork                    
+ 8 Poultry                 
+ 9 Rice                    
+10 Soybeans                
+11 Wheat and Wheat 
+
+Wanting to visit a country where the food will feel familiar, choose a country from the same group as your own.  Wanting a more exotic experience, choose a country that is far from your own.  It's up to you to decide.
+Data from https://www.nu3.de/blogs/nutrition/food-carbon-footprint-index-2018
+
+#machinelearning #unsupervisedmachinelearning #rstats #tidytuesday #food #ml #travel #carbonfootprint #decision
+
+```{r Readme, eval = interactive()}
+
+tt
+
+```
+
+
+# Glimpse Data
+
+Take an initial look at the format of the data available.
+
+```{r Glimpse}
+
+tt %>% 
+  map(glimpse)
+
+```
+
+# Wrangle
+
+Explore the data and process it into a nice format for plotting! Access each dataset by name by using a dollarsign after the `tt` object and then the name of the data set.
+
+```{r Wrangle}
+
+food_carbon_footprint %>% glimpse()
+
+food_carbon_footprint %>% 
+  count(country, sort = TRUE)
+
+food_carbon_footprint %>%
+  count(food_category, sort = TRUE)
+
+food_carbon_footprint_wide_tbl <- food_carbon_footprint %>%
+  group_by(country) %>%
+  summarise(co2_emmission = sum(co2_emmission)) 
+
+
+
+```
+
+# Project Summary
+
+__Which countries are similar to each other in terms of food consumption and co2 emmissions.__
+
+# Objectives
+
+Apply K-Means and UMAP along with `dplyr`, `ggplot2`, and `purrr` to create a visualization that identifies subgroups in 130 countries.
+
+- Modeling: `kmeans()` and `umap()`
+- Iteration: `purrr`
+- Data Manipulation: `dplyr`, `tidyr`, and `tibble`
+- Visualization: `ggplot2` (bonus `plotly`)
+
+
+```{r}
+
+library(tidyverse)
+library(tidyquant)
+library(broom)
+library(umap)
+library(plotly) 
+library(ggrepel)
+
+```
+
+# Question
+
+<mark>What are the similarities between different country's food consumption?</mark>
+
+Answering this question helps us understand which countries are related.
+
+
+```{r}
+
+food_carbon_footprint %>%
+    distinct(food_category) %>% 
+    arrange(food_category) %>% head(20)
+```
+
+
+```{r}
+# Select columns for unsupervised learning
+food_carbon_footprint_tbl <- food_carbon_footprint %>%
+    select(country, food_category, co2_emmission) %>%
+    # group_by(country) %>%
+    na.omit()
+
+food_carbon_footprint_tbl
+
+food_kg_wide_tbl <- food_carbon_footprint %>%
+  select(country, food_category, consumption) %>%
+  pivot_wider(names_from = food_category, values_from = consumption) 
+  
+```
+
+
+## Step 2 - Convert to User-Item Format
+
+The next step is to convert to a user-item format with the `country` in the first column and every other column the value of the _co2 emissions_ (`co2_emmision`) for every `country` for each `food_category`.
+
+Now convert to a user-item format. The user in this case is the `country`, and the item in this case is the `co2_emission` by `food_category` 
+
+- Spread the `food_category` column and fill any `NA` values with zeros. 
+
+```{r}
+# Convert to User-Item Format
+food_carbon_matrix_tbl <- food_carbon_footprint_tbl %>%
+    pivot_wider(names_from = food_category, values_from = co2_emmission, values_fill = 0, names_sort = TRUE) %>%
+    arrange(country)
+
+food_carbon_matrix_tbl %>% glimpse()
+
+food_carbon_matrix_tbl
+
+food_carbon_matrix_tbl %>% write_rds(file = "data/food_carbon_matrix_tbl.rds")
+
+```
+
+
+```{r}
+# Alternative user-item format: Food consumption (kg/person/year)
+
+food_kg_wide_tbl %>% write_rds("data/food_kg_wide_tbl.rds")
+```
+
+
+## Step 3 - Perform K-Means Clustering
+
+Next, we'll perform __K-Means clustering__. 
+
+```{r}
+# food_carbon_matrix_tbl <- read_rds("data/food_carbon_matrix_tbl.rds")
+```
+
+Beginning with the `food_carbon_matrix_tbl`, perform the following operations:
+
+- Drop the non-numeric column, `symbol`
+- Perform `kmeans()` with `centers = 4` and `nstart = 20`
+- Save the result as `kmeans_obj`
+
+```{r}
+# Create kmeans_obj for 4 centers
+kmeans_obj <- food_carbon_matrix_tbl %>%
+    select(-country) %>%
+    kmeans(centers = 5, nstart = 20)
+
+kmeans_obj
+
+?kmeans
+
+```
+
+```{r}
+# Create kmeans_obj for 4 centers
+kmeans_obj_kg <- food_kg_wide_tbl %>%
+    select(-country) %>%
+    kmeans(centers = 5, nstart = 20)
+
+kmeans_obj_kg
+
+?kmeans
+
+```
+
+Use `glance()` to get the `tot.withinss`. 
+
+```{r}
+# Apply glance() to get the tot.withinss
+
+# Use for tot.withinss for SKREE plot
+broom::glance(kmeans_obj)
+
+broom::glance(kmeans_obj_kg)
+
+```
+
+## Step 4 - Find the optimal value of K
+
+Now that we are familiar with the process for calculating `kmeans()`, let's use `purrr` to iterate over many values of "k" using the `centers` argument. 
+
+We'll use this __custom function__ called `kmeans_mapper()`:
+
+```{r}
+kmeans_mapper <- function(center = 3) {
+    food_carbon_matrix_tbl %>%
+        select(-country) %>%
+        kmeans(centers = center, nstart = 20)
+}
+```
+
+```{r}
+kmeans_mapper_kg <- function(center = 3) {
+    food_kg_wide_tbl %>%
+        select(-country) %>%
+        kmeans(centers = center, nstart = 20)
+}
+```
+
+Apply the `kmeans_mapper()` and `glance()` functions iteratively using `purrr`.
+
+- Create a tibble containing column called `centers` that go from 1 to 30
+- Add a column named `k_means` with the `kmeans_mapper()` output. Use `mutate()` to add the column and `map()` to map centers to the `kmeans_mapper()` function.
+- Add a column named `glance` with the `glance()` output. Use `mutate()` and `map()` again to iterate over the column of `k_means`.
+- Save the output as `k_means_mapped_tbl` 
+
+
+```{r}
+# Use purrr to map
+k_means_mapped_tbl <- tibble(centers = 1:30) %>%
+    mutate(k_means = centers %>% map(kmeans_mapper)) %>%
+    mutate(glance = k_means %>% map(glance)) 
+
+k_means_mapped_tbl
+
+k_means_mapped_tbl %>% write_rds(file = "data/k_means_mapped_tbl.rds")
+# Output: k_means_mapped_tbl 
+```
+
+```{r}
+# Use purrr to map
+k_means_mapped_kg_tbl <- tibble(centers = 1:30) %>%
+    mutate(k_means = centers %>% map(kmeans_mapper_kg)) %>%
+    mutate(glance = k_means %>% map(glance)) 
+
+k_means_mapped_kg_tbl
+
+k_means_mapped_kg_tbl %>% write_rds(file = "data/k_means_mapped_kg_tbl.rds")
+# Output: k_means_mapped_tbl 
+```
+
+Next, let's visualize the "tot.withinss" from the glance output as a ___Scree Plot___. 
+
+- Begin with the `k_means_mapped_tbl`
+- Unnest the `glance` column
+- Plot the `centers` column (x-axis) versus the `tot.withinss` column (y-axis) using `geom_point()` and `geom_line()`
+- Add a title "Scree Plot" and feel free to style it with your favorite theme
+
+```{r}
+
+# Skree Plot ----
+k_means_mapped_kg_tbl %>%
+    unnest(glance) %>%
+    select(centers, tot.withinss) %>%
+    #Visualisation
+    ggplot(aes(centers, tot.withinss)) +
+    geom_point(color = "#2c3e50", size = 4) +
+    geom_line(color = "#2c3e50", size = 1) +
+    ggrepel::geom_label_repel(aes(label = centers), color = "#2c3e50") +
+    
+    # Formatting
+    theme_tq() +
+    labs(
+        title = "Skree Plot",
+        subtitle = "Measures the distance each of the countries are from the closest K-Means center",
+        caption = "Conclusion: Based on the Scree Plot, we select 4 clusters to segment the customer base"
+    )
+
+
+```
+
+We can see that the Scree Plot becomes linear (constant rate of change) between 5 and 10 centers for K.
+
+
+## Step 5 - Apply UMAP
+
+Next, let's plot the `UMAP` 2D visualization to help us investigate cluster assignments. 
+
+
+We're going to import the correct results first (just in case you were not able to complete the last step).
+```{r}
+# k_means_mapped_tbl <- read_rds("data/k_means_mapped_tbl.rds")
+```
+
+First, let's apply the `umap()` function to the `food_carbon_matrix_tbl`, which contains our user-item matrix in tibble format.
+
+- Start with `food_carbon_matrix_tbl`
+- De-select the `country` column
+- Use the `umap()` function storing tcountryhe output as `umap_results`
+```{r}
+# Apply UMAP
+umap_results <- food_carbon_matrix_tbl %>%
+    select(-country) %>%
+    umap()
+
+
+# Store results as: umap_results 
+```
+
+
+```{r}
+# Apply UMAP
+umap_results_kg <- food_kg_wide_tbl %>%
+    select(-country) %>%
+    umap()
+
+
+# Store results as: umap_results 
+```
+Next, we want to combine the `layout` from the `umap_results` with the `country` column from the `food_carbon_matrix_tbl`.
+
+- Start with `umap_results$layout`
+- Convert from a `matrix` data type to a `tibble` with `as_tibble()`
+- Bind the columns of the umap tibble with the `country` column from the `food_carbon_matrix_tbl`.
+- Save the results as `umap_results_tbl`.
+
+```{r}
+# Convert umap results to tibble with symbols
+umap_results_tbl <- umap_results$layout %>%
+    as_tibble() %>%
+    set_names(c("x", "y")) %>%
+    bind_cols(
+        food_carbon_matrix_tbl %>% select(country)
+    )
+
+umap_results_tbl
+
+umap_results_tbl %>% write_rds(file = "data/umap_results_tbl.rds")
+
+# Output: umap_results_tbl
+```
+
+```{r}
+# Convert umap results to tibble with symbols
+umap_results_tbl_kg <- umap_results_kg$layout %>%
+    as_tibble() %>%
+    set_names(c("x", "y")) %>%
+    bind_cols(
+        food_kg_wide_tbl %>% select(country)
+    )
+
+umap_results_tbl_kg
+
+umap_results_tbl_kg %>% write_rds(file = "data/umap_results_tbl_kg.rds")
+
+# Output: umap_results_tbl
+```
+
+
+Finally, let's make a quick visualization of the `umap_results_tbl`.
+
+- Pipe the `umap_results_tbl` into `ggplot()` mapping the `V1` and `V2` columns to x-axis and y-axis
+- Add a `geom_point()` geometry with an `alpha = 0.5`
+- Apply `theme_tq()` and add a title "UMAP Projection"
+
+```{r}
+# Visualize UMAP results
+
+umap_results_tbl %>%
+    ggplot(aes(x, y)) +
+    geom_point(alpha = 0.5) +
+    geom_label_repel(aes(label = country), size = 3) +
+    theme_tq() +
+    labs(
+        title = "UMAP Projection"
+    )
+
+```
+
+
+```{r}
+# Visualize UMAP results
+
+umap_results_tbl_kg %>%
+    ggplot(aes(x, y)) +
+    geom_point(alpha = 0.5) +
+    geom_label_repel(aes(label = country), size = 3) +
+    theme_tq() +
+    labs(
+        title = "UMAP Projection"
+    )
+```
+
+We can now see that we have some clusters. However, we still need to combine the K-Means clusters and the UMAP 2D representation. 
+
+
+
+## Step 6 - Combine K-Means and UMAP
+
+Next, we combine the K-Means clusters and the UMAP 2D representation
+
+We're going to import the correct results first (just in case you were not able to complete the last step).
+```{r}
+# 
+k_means_mapped_tbl <- read_rds("data/k_means_mapped_tbl.rds")
+umap_results_tbl   <- read_rds("data/umap_results_tbl.rds")
+```
+
+
+First, pull out the K-Means for 10 Centers. Use this since beyond this value the Scree Plot flattens. 
+
+- Begin with the `k_means_mapped_tbl`
+- Filter to `centers == 10`
+- Pull the `k_means` column
+- Pluck the first element
+- Store this as `k_means_obj`
+
+```{r}
+# Get the k_means_obj from the 10th center
+k_means_obj <- k_means_mapped_tbl %>%
+    filter(centers == 10) %>%
+    pull(k_means) %>%
+    pluck(1)
+
+k_means_obj
+# Store as k_means_obj
+```
+
+```{r}
+# Get the k_means_obj from the 10th center
+kmeans_obj_kg <- k_means_mapped_kg_tbl %>%
+    filter(centers == 10) %>%
+    pull(k_means) %>%
+    pluck(1)
+
+kmeans_obj_kg
+# Store as k_means_obj
+```
+
+Next, we'll combine the clusters from the `k_means_obj` with the `umap_results_tbl`.
+
+- Begin with the `k_means_obj`
+- Augment the `k_means_obj` with the `stock_date_matrix_tbl` to get the clusters added to the end of the tibble
+- Select just the `symbol` and `.cluster` columns
+- Left join the result with the `umap_results_tbl` by the `symbol` column
+- Left join the result with the result of `sp_500_index_tbl %>% select(symbol, company, sector)` by the `symbol` column. 
+- Store the output as `umap_kmeans_results_tbl`
+
+```{r}
+# Use your dplyr & broom skills to combine the k_means_obj with the umap_results_tbl
+umap_kmeans_results_tbl <- k_means_obj %>%
+    augment(food_carbon_matrix_tbl) %>%
+    select(country, .cluster) %>%
+    left_join(umap_results_tbl) %>%
+    left_join(food_carbon_footprint_wide_tbl %>% select(country, co2_emmission))
+
+umap_kmeans_results_tbl
+# Output: umap_kmeans_results_tbl 
+```
+
+```{r}
+# Use your dplyr & broom skills to combine the k_means_obj with the umap_results_tbl
+umap_kmeans_results_tbl_kg <- kmeans_obj_kg %>%
+    augment(food_kg_wide_tbl) %>%
+    select(country, .cluster) %>%
+    left_join(umap_results_tbl_kg) %>%
+    left_join(food_carbon_footprint_wide_tbl %>% select(country, co2_emmission))
+
+umap_kmeans_results_tbl_kg
+# Output: umap_kmeans_results_tbl 
+```
+
+Plot the K-Means and UMAP results.
+
+- Begin with the `umap_kmeans_results_tbl`
+- Use `ggplot()` mapping `V1`, `V2` and `color = .cluster`
+- Add the `geom_point()` geometry with `alpha = 0.5`
+- Apply `theme_tq()` and `scale_color_tq()`
+
+Note - If you've used centers greater than 12, you will need to use a hack to enable `scale_color_tq()` to work. Just replace with: `scale_color_manual(values = palette_light() %>% rep(3))`
+
+```{r}
+# Visualize the combined K-Means and UMAP results
+umap_kmeans_results_tbl %>%
+    ggplot(aes(x, y, color = .cluster)) +
+    geom_point(alpha = 0.9) +
+    geom_label_repel(aes(label = country, size = 2), max.overlaps = 30) +
+    # theme_tq() +
+    theme_light() +
+    scale_color_tq() +
+    labs(
+        title = "Similarity Between Food CO2 emissions by Country",
+        subtitle = "Clusters Have Food Related CO2 Emissions"
+    ) +
+    theme(legend.position = "none")
+
+```
+
+```{r}
+# Visualize the combined K-Means and UMAP results
+umap_kmeans_results_tbl_kg %>%
+    ggplot(aes(x, y, color = .cluster)) +
+    geom_point(alpha = 0.9) +
+    geom_label_repel(aes(label = country), max.overlaps = 20) +
+    # scale_colour_viridis_c(aesthetics = "color", 
+    #                      name = "CO2 Emissions (kg CO2/person/yr") +
+    # theme_tq() +
+    theme_light() +
+    scale_color_tq() +
+    labs(
+        title = "Similarity in Food Consumption by Country"
+        # subtitle = "Colored by CO2 Emissions from Food Consumption"
+    ) +
+    theme(legend.position = "none")
+
+```
+
+If you've made it this far, you're doing GREAT!!!
+
+
+
+# BONUS - Interactively Exploring Clusters
+
+This is an interactive demo that is an extension of what we've learned so far. You are not required to produce any code in this section. However, it presents an interesting case to see how we can explore the clusters using the `plotly` library with the `ggplotly()` function. 
+
+
+
+These two functions combine to produce the interactive plot:
+
+- `get_kmeans()`: Returns a data frame of UMAP and K-Means result for a value of `k`
+- `plot_cluster`: Returns an interactive `plotly` plot enabling exploration of the cluster and UMAP results. The only additional code you have not seen so far is the `ggplotly()` function. This is a topic for __Week 7: Communication__. 
+```{r}
+get_kmeans <- function(k = 3) {
+    
+    k_means_obj <- k_means_mapped_tbl %>%
+        filter(centers == k) %>%
+        pull(k_means) %>%
+        pluck(1)
+    
+    umap_kmeans_results_tbl <- k_means_obj %>% 
+        augment(food_carbon_matrix_tbl) %>%
+        select(country, .cluster) %>%
+        left_join(umap_results_tbl, by = "country") %>%
+        left_join(food_carbon_footprint_wide_tbl %>% select(country, co2_emmission),
+                  by = "country")
+    
+    return(umap_kmeans_results_tbl)
+}
+
+plot_cluster <- function(k = 10) {
+    
+    g <- get_kmeans(k) %>%
+        
+        mutate(label_text = str_glue("Country: {country}
+                                     CO2 emission: {co2_emmission}")) %>%
+        
+        ggplot(aes(x, y, color = .cluster, text = label_text)) +
+        geom_point(alpha = 0.5) +
+        theme_tq() +
+        scale_color_tq() +
+        # scale_color_manual(values = palette_light() %>% rep(3)) +
+            labs(
+        title = "Similarity Between CO2 Emissions From Food Consumption",
+        subtitle = "Clusters Have Similar Food Derived CO2 Emissions"
+    ) +
+    theme(legend.position = "none")
+    
+    g %>%
+        ggplotly(tooltip = "text")
+    
+}
+```
+
+We can plot the clusters interactively. 
+
+```{r}
+plot_cluster(10)
+```
+
+
+
+
+
+
+# Visualize
+
+Using your processed dataset, create your unique visualization.
+
+```{r Visualize}
+
+
+  
+```
+
+# Save Image
+
+Save your image for sharing. Be sure to use the `#TidyTuesday` hashtag in your post on twitter! 
+
+```{r}
+
+# This will save your most recent plot
+ggsave(
+  filename = "My TidyTuesday Plot.png",
+  device = "png")
+
+```

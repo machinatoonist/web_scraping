@@ -1,0 +1,285 @@
+---
+title: "TidyTemplate"
+date: 2020-10-27
+output: html_output
+---
+
+# TidyTuesday
+
+How to Look Into Your Process Performance Using Machine
+Learning.  Decision Tree models benefit from being quite transparent.  The plot generated below shows how Canadian wind turbine data are split into separate groups and these are used to create an efficient predictive model of turbine capacity.  In this example we can see the effect of rotor diameter and commissioning date on power output.  The stained glass window effect is courtesy of Grant McDermott's parttree package and inspiration from Julia Silge.
+
+#rstats @juliasilge @grantmcdermott #machinelearning #ml #processengineering #optimisation #businessimprovement #tidytuesday #tidymodels
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(tidytuesdayR)
+library(tidymodels)
+library(tictoc)
+
+```
+
+# Load the weekly Data
+
+Dowload the weekly data and make available in the `tt` object.
+
+```{r Load}
+
+tt <- tt_load("2020-10-27")
+
+turbine_tbl <- tt[[1]]
+
+turbine_tbl %>% glimpse()
+
+turbine_tbl %>%
+  count(commissioning_date, sort  = TRUE)
+
+turbine_prep <- turbine_tbl %>%
+  transmute(
+    turbine_capacity = turbine_rated_capacity_k_w,
+    rotor_diameter_m,
+    hub_height_m,
+    commissioning_date = parse_number(commissioning_date),
+    province = fct_lump_n(province_territory, 8),
+    model = fct_lump_n(model, 12)) %>%
+  filter(!is.na(turbine_capacity)) %>%
+  mutate_if(is.character, factor)
+
+turbine_prep %>%
+  select(turbine_capacity:model) %>% 
+  pivot_longer(rotor_diameter_m:commissioning_date) %>%
+  ggplot(aes(turbine_capacity, value)) +
+  geom_hex(bins = 15, alpha = 0.8) +
+  # geom_point(alpha = 0.8) +
+  geom_smooth(method = "lm") +
+  facet_wrap(~name, scales = "free_y") +
+  labs(y = NULL) +
+  scale_fill_gradient(high = "cyan3") +
+  theme_light()
+
+turbine_tbl %>% names()
+  count(commissioning_date, sort = TRUE)
+
+```
+
+```{r}
+
+set.seed(2021)
+# Divides data into quantiles and do stratified sampling with each quantile
+splits <- initial_split(turbine_prep, strata = turbine_capacity)
+
+training <- training(splits)
+testing <-  testing(splits)
+
+# Make resamples for tuning of model
+set.seed(123)
+wind_folds <- vfold_cv(training, strata = turbine_capacity)
+wind_folds
+
+# 4374/486 Analysis set and Assessment set for each of the resamples
+
+```
+
+```{r}
+# Fit and tune a decision tree model
+
+tree_spec <- decision_tree(
+  mode = "regression",
+  cost_complexity = tune(),
+  tree_depth = tune(),
+  min_n = tune()
+) %>%
+  set_engine("rpart") 
+
+tree_spec
+
+tree_grid <- grid_regular(cost_complexity(), tree_depth(), min_n(), levels = 4)
+
+```
+
+```{r}
+doParallel::registerDoParallel()
+
+tic()
+set.seed(345)
+tree_rs <- tune_grid(
+  tree_spec,
+  turbine_capacity ~ .,
+  resamples = wind_folds,
+  grid = tree_grid,
+  metrics = metric_set(rmse, rsq, mae, mape)
+)
+toc()
+
+```
+
+
+```{r}
+# Analyse metrics from cross validation and resampling
+collect_metrics(tree_rs)
+
+autoplot(tree_rs) + theme_light()
+
+show_best(tree_rs)
+
+select_best(tree_rs, "rmse")
+
+# Specify the tuned model to fit to data
+final_tree <- finalize_model(tree_spec, select_best(tree_rs, "rmse"))
+
+```
+
+### Fitting
+
+```{r}
+# Fit final model to training data
+
+final_fit <- fit(final_tree, turbine_capacity ~., training)
+
+# Last fit uses the splits to train and test the model
+# Provides predictions and metrics on the training data
+# .metrics and .predictions are on the testing data
+# .workflow are performed on training data
+final_result <- last_fit(final_tree, turbine_capacity ~., splits)
+
+
+```
+
+### Predicting on new data
+
+```{r}
+# Example usage for prediction
+predict(final_fit, training[44,])
+
+predict(final_result$.workflow[[1]], training[44,])
+```
+
+
+### Variable importance plot
+```{r}
+library(vip)
+
+final_fit %>%
+  vip(geom = "col", aesthetics = list(fill = "midnightblue", alpha = 0.8)) +
+  scale_y_continuous(expand = c(0,0))
+
+```
+
+```{r}
+
+# Last run took 342 seconds
+tic()
+set.seed(345)
+tree_part <- tune_grid(
+  tree_spec,
+  turbine_capacity ~ rotor_diameter_m + commissioning_date,
+  resamples = wind_folds,
+  grid = tree_grid,
+  metrics = metric_set(rmse, rsq, mae, mape)
+)
+toc()
+
+
+
+```
+
+```{r}
+# Analyse metrics from cross validation and resampling for mini-model
+collect_metrics(tree_part)
+
+autoplot(tree_part) + theme_light()
+
+show_best(tree_part)
+
+select_best(tree_part, "rmse")
+
+# Specify the tuned model to fit to data for visualisation
+final_branch <- finalize_model(tree_spec, select_best(tree_part, "rmse"))
+
+```
+
+### Visualise using the partree package
+```{r}
+# remotes::install_github("grantmcdermott/parttree")
+# This visualisation approach only works for 
+library(parttree)
+
+ex_fit <- fit(final_tree, 
+              turbine_capacity ~ rotor_diameter_m + commissioning_date,
+              training)
+
+training %>%
+  ggplot(aes(rotor_diameter_m, commissioning_date)) +
+  geom_parttree(data = ex_fit, aes(fill = turbine_capacity), alpha = 0.3) +
+  geom_jitter(alpha = 0.7, width = 1, height = 0.5, aes(color = turbine_capacity)) +
+  scale_colour_viridis_c(aesthetics = c("color", "fill"))
+
+# final_result$.workflow[[1]]
+
+visual_fit <- fit(final_branch, 
+                turbine_capacity ~ rotor_diameter_m + commissioning_date,
+                training)
+
+training %>%
+  ggplot(aes(rotor_diameter_m, commissioning_date)) +
+  geom_parttree(data = visual_fit, aes(fill = turbine_capacity), alpha = 0.3) +
+  # geom_point(alpha = 0.7, 
+  #             size = 1,
+  #             aes(color = turbine_capacity)) +
+  geom_jitter(alpha = 0.7,
+              size = 1,
+              width = 0.5,
+              height = 0.4,
+              aes(color = turbine_capacity)) +
+  scale_colour_viridis_c(aesthetics = c("color", "fill"), 
+                         name = "Turbine Capacity (kW)") +
+  labs(
+    title = "How a Decision Tree Model Looks At Your Dataset",
+    subtitle = "machinatoonist.com",
+    x = "Rotor Diameter",
+    y = "Commissioning Date",
+    caption = "Canadian Wind Turbine Dataset (2020)",
+    alt = "Predictive Turbine Capacity Using the Canadian Wind Turbine Dataset"
+    # color = "Turbine Capacity (kW)"
+  ) 
+  # guides(color = guide_legend(title = "Turbine Capacity (kW)", title.position = "top"))
+  
+```
+
+```{r}
+collect_metrics(final_result)
+
+collect_predictions(final_result) %>%
+  ggplot(aes(turbine_capacity, .pred)) +
+  geom_abline(slope = 1, lty = 2, color = "gray50", alpha = 0.5) +
+  geom_point(alpha = 0.6, color = "midnightblue") +
+  labs(title = "Predictive Model Performance on Testing Data: R Squared Plot",
+       x = "Actual Turbine Capacity",
+       y  = "Predicted Turbine Capacity") +
+  theme_light()
+
+
+```
+
+```{r}
+doParallel::stopImplicitCluster()
+```
+
+### Save models
+```{r}
+
+saveRDS(object = final_result, file = "models/wind_turbine_fitted_wflw.rds")
+saveRDS(object = final_branch, file = "models/mini_turbine_fitted_wflw.rds")
+saveRDS(object = final_fit, file = "models/turbine_fitted_decision_tree.rds")
+saveRDS(object = turbine_prep, file = "data/turbine_prep_tbl.rds")
+
+turbine_prep <- readRDS(file = "data/turbine_prep_tbl.rds")
+final_result <- readRDS("models/wind_turbine_fitted_wflw.rds")
+final_branch <- readRDS("models/mini_turbine_fitted_wflw.rds")
+final_fit <- readRDS("models/turbine_fitted_decision_tree.rds")
+
+```
+

@@ -1,0 +1,332 @@
+# LIBRARIES ----
+
+library(tidyverse) # Main Package - Loads dplyr, purrr
+library(rvest)     # HTML Hacking & Web Scraping
+library(furrr)     # Parallel Processing using purrr (iteration)
+library(fs)        # Working with File System
+library(tidytext)
+library(stringr)
+library(tidyr)
+library(forcats)
+library(timetk)
+library(lubridate)
+library(scales)
+
+# How to analyse 2.2 million words from 786 different speeches and interviews
+# by the Prime Minister of Australia from 2020-21.  After hearing one of Scott
+# Morrison's recent speeches I began to wonder if transcripts of all his
+# speeches and interview were publicly available.  It turns out they are!
+
+# The plots below show the top 10 most important words used in #ScottMorrisons
+# speeches and interviews.  For example, "bushfires", "disaster" and "assistance"
+# were most important in Jan 2020 and in May 2020 it was all about the "covidsafe
+# app". While in July 2021 it is "lockdown", "vaccination" and "doses".  This
+# is what I do for fun on the weekends.  I've provided some details of how below.
+
+# After scraping the full text using the #rvest package
+# I tidied the data using @Julia Silge's #Tidytext tools and grouped the PM's
+# words by month.  The most uniquely important words for each month were found
+# using Term Frequency - Inverse Document Frequency (TF-IDF).  This technique
+# allowed me to remove very common words that were present every month such as
+# "People" and "Australians"using TF-IDF so that we can focus on specific words
+# most important to the PM's dialogue in each month.
+
+
+
+url <- "https://www.pm.gov.au/media/press-conference-kirribilli-nsw-"
+
+pm_kirribilli_press_conference_pages <- tibble(page_num = 1:7)
+
+# Press releases to scrape ----
+pm_kirribilli_press_conference_pages <- pm_kirribilli_press_conference_pages %>%
+    mutate(page = paste0(url, page_num,"/"))
+
+pm_kirribilli_press_conference_pages
+
+page <- read_html(pm_kirribilli_press_conference_pages[1,2] %>% pull())
+
+page %>%
+    html_nodes("#block-system-main p")
+
+media <- read_html("https://www.pm.gov.au/media/")
+
+# Setup for collecting all links to media pages ----
+media_pages <- tibble(page_num = 0:108) %>%
+    mutate(page = paste0("https://www.pm.gov.au/media?page=",page_num,"/"))
+
+# Create a function to get links ----
+get_link_df <- function (page) {
+
+    content <- read_html(page)
+
+    title <- content %>%
+        html_nodes(".media-title a") %>%
+        html_text()
+
+    date <- content %>%
+        html_nodes(".date-display-single") %>%
+        html_text()
+
+    type <- content %>%
+        html_nodes(".media-type") %>%
+        html_text()
+
+    content %>%
+        html_nodes(".media-title a") %>%
+        html_attr(name = "href") %>%
+        as_tibble() %>%
+        mutate(value = paste0("https://www.pm.gov.au",value)) %>%
+        mutate(title = title,
+               date = date,
+               type = type) %>%
+        relocate(title, date, type)
+}
+
+# Test Function ----
+return <- get_link_df("https://www.pm.gov.au/media?page=0")
+
+page = "https://www.pm.gov.au/media?page=0"
+
+view_links <- get_link_df(page)
+
+# Run Query (long running so commented out)
+all_pm_media_blurbs <- media_pages %>%
+    mutate(link_df = map(page, get_link_df))
+
+pm_media_unnested <- all_pm_media_blurbs %>%
+    unnest(cols = link_df)
+
+pm_media_unnested %>% glimpse()
+
+write_csv(pm_media_unnested, "pm_media_blurbs.csv")
+pm_media_unnested <- read_csv("pm_media_blurbs.csv")
+
+# Scrape the links ----
+
+# Testing
+link <- "https://www.pm.gov.au/media/press-conference-kirribilli-nsw-7"
+
+get_text <- read_html(link)
+
+content <- get_text %>%
+    html_nodes("#block-system-main p") %>%
+    html_text(trim = TRUE) %>%
+    as_tibble()
+
+content %>%
+    mutate(linenumber = row_number(),
+           sequence = cumsum(str_detect(value, pattern = ":"))) %>%
+    separate(value, c("speaker", "text"), ":", extra = "merge", fill = "left") %>%
+    fill(speaker, .direction = "downup")
+
+# Create a function to scrape text ----
+
+library(progress)
+pb <- progress_bar$new(total = nrow(pm_media_unnested),
+                       format = "executing [:bar] :percent eta::eta")
+
+all_pm_transcripts <- function(page) {
+
+    # pb$tick()
+    # Sys.sleep(1/100)
+
+    get_text <- read_html(page)
+
+    content <- get_text %>%
+        html_nodes("#block-system-main p") %>%
+        html_text(trim = TRUE) %>%
+        as_tibble()
+
+    content %>%
+        mutate(linenumber = row_number(),
+               sequence = cumsum(str_detect(value, pattern = ":"))) %>%
+        separate(value, c("speaker", "text"), ":", extra = "merge", fill = "left") %>%
+        fill(speaker, .direction = "downup")
+
+    # pb$terminate()
+    # invisible()
+
+}
+
+# Scrape the actual text ----
+
+all_pm_transcripts(link)
+
+test_extract <- pm_media_unnested %>%
+    slice_head(n = 2) %>%
+    mutate(extract = map(value, all_pm_transcripts)) %>%
+    unnest(extract) %>%
+    mutate(accessed = Sys.Date())
+
+test_extract %>% glimpse()
+{
+pm_text_extract <- pm_media_unnested %>%
+    # slice_head(n = 5) %>%
+    mutate(extract = map(value, all_pm_transcripts))
+
+pm_text_extract_flat_df <- pm_text_extract %>%
+    unnest(extract) %>%
+    mutate(accessed = Sys.Date())
+
+write_csv(pm_text_extract_flat_df, "pm_text_extract.csv")
+}
+
+pm_text_extract_flat_df %>%
+    count(type, sort = TRUE)
+
+pm_text_extract_flat_df %>% glimpse()
+
+pm_text_extract_flat_df %>%
+    count(page, sort = TRUE)
+
+pm_text_extract_flat_df %>%
+    count(speaker, sort = TRUE)
+
+dataset <- pm_text_extract_flat_df %>%
+    filter(!is.na(speaker)) %>%
+    filter(!(speaker %in% c("Key projects to be funded include", "They are these"))) %>%
+    select(-c(page_num, page)) %>%
+    mutate(date = lubridate::dmy(date))
+
+dataset %>%
+    count(speaker, sort = TRUE)
+
+dataset %>% glimpse()
+
+dataset %>%
+    count(value, sort = TRUE)
+
+write_csv(dataset, "tidy_pm_dataset.csv")
+
+# Analyse text extract ----
+text_extract <- dataset %>%
+    unnest_tokens(word, text)
+
+#2.2 million words
+text_extract %>% glimpse()
+
+
+text_extract %>%
+    group_by(speaker) %>%
+    summarize(number_of_words = n())
+
+
+data("stop_words")
+
+text_extract_clean <- text_extract %>%
+    anti_join(stop_words) %>%
+    mutate(speaker = str_to_title(speaker)) %>%
+    filter(speaker == "Prime Minister")
+
+count_clean <- text_extract_clean %>%
+    count(word, sort = TRUE)
+
+text_extract_clean %>% glimpse()
+
+text_ordered <- text_extract_clean %>%
+    left_join(count_clean, by = c("word" = "word")) %>%
+    mutate(word = fct_lump_n(word, 100)) %>%
+    mutate(word = fct_reorder(word, n)) %>%
+    filter(word != "Other")
+
+
+text_ordered %>%
+    filter(n > 800) %>%
+    ggplot(aes(word, n)) +
+    geom_col() +
+    coord_flip()
+
+# Sentiment analysis
+
+?get_sentiments()
+
+pm_sentiment <- text_extract_clean %>%
+    inner_join(get_sentiments("bing")) %>%
+    count(date, index = linenumber %/% 100, sentiment) %>%
+    spread(sentiment, n, fill = 0) %>%
+    mutate(sentiment = positive - negative)
+
+pm_sentiment %>%
+    ggplot(aes(date, sentiment)) +
+    geom_point()
+
+# Time series sentiment analysis of PM speeches and interviews
+pm_sentiment %>%
+    plot_time_series(.date_var = date,
+                     .value = sentiment,
+                     .title = "Australian Prime Minister Sentiment on the Public Record"
+                     )
+
+pm_sentiment_words <- text_extract_clean %>%
+    inner_join(get_sentiments("bing")) %>%
+    filter(!(word %in% c("premier", "inaudible", "journalist"))) %>%
+    count(word, sentiment, sort = TRUE)
+
+text_ordered <- pm_sentiment_words %>%
+    mutate(word = fct_lump_n(word, 50)) %>%
+    mutate(word = fct_reorder(word, n)) %>%
+    filter(word != "Other")
+
+text_ordered %>% glimpse()
+
+text_ordered %>%
+    filter(n > 500) %>%
+    ggplot(aes(word, n, fill = sentiment)) +
+    geom_col() +
+    # facet_grid(~sentiment, ) +
+    coord_flip() +
+    theme_light()
+
+
+# Term frequency and inverse document frequency (TF-IDF)
+# ln(number of documents/number of documents containing term)
+speech_words <- text_extract_clean %>%
+    mutate(month = lubridate::floor_date(date, "month")) %>%
+    filter(!(word %in% c("premier", "inaudible", "journalist",
+                         "15th", "19", "760,000", "leigh",
+                         "speaker", "deb", "fiona", "paul",
+                         "kylie", "mark", "july", "friday"))) %>%
+    count(month, word, sort = TRUE)
+
+total_words <-  speech_words %>%
+    group_by(month) %>%
+    summarise(total = sum(n))
+
+speech_words_join <- left_join(speech_words, total_words, by = c("month" = "month"))
+
+speech_words_tf_idf <- speech_words %>%
+    filter(n > 20) %>%
+    bind_tf_idf(word, month, n)
+
+# Plot TF-IDF ----
+speech_words_tf_idf %>%
+    arrange(desc(tf_idf)) %>%
+    group_by(month) %>%
+    slice_max(n = 10, order_by = tf_idf) %>%
+    ungroup %>%
+    mutate(word = reorder(word, tf_idf)) %>%
+    ggplot(aes(word, tf_idf, fill = month)) +
+    geom_col(show.legend = FALSE) +
+    facet_wrap(~month, scales = "free") +
+    coord_flip() +
+    theme_light() +
+    theme(axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),
+          strip.background = element_rect(fill = "white"),
+          strip.text = element_text(colour = "black")) +
+    labs(
+        title = "Australian Prime Ministerial Speech Analysis By Month: 2020-21",
+        subtitle = "Most important words spoken by the Australian PM each month relative to other months",
+        y = "Term Frequency–Inverse Document Frequency (TF-IDF)",
+        caption = "TF-IDF is numerical statistic intended to reflect how important a word is to a document in a collection or corpus",
+        x = "Top 10 Words for the Month"
+    )
+
+
+
+speech_words_join %>%
+    bind_tf_idf(word, value, n) %>%
+    filter()
+    group_by(value) %>%
+    top_n(5)
+

@@ -1,0 +1,275 @@
+---
+title: "TidyTemplate"
+date: 2021-05-18
+output: html_output
+---
+
+# TidyTuesday
+
+Join the R4DS Online Learning Community in the weekly #TidyTuesday event!
+Every week we post a raw dataset, a chart or article related to that dataset, and ask you to explore the data.
+While the dataset will be “tamed”, it will not always be tidy! As such you might need to apply various R for Data Science techniques to wrangle the data into a true tidy format.
+The goal of TidyTuesday is to apply your R skills, get feedback, explore other’s work, and connect with the greater #RStats community!
+As such we encourage everyone of all skills to participate!
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(tidytuesdayR)
+library(scales)
+library(ggpomological)
+library(skimr)
+library(janitor)
+library(broom)
+library(forcats)
+theme_set(theme_pomological())
+
+```
+
+# Load the weekly Data
+
+Dowload the weekly data and make available in the `tt` object.
+
+```{r Load}
+
+tt <- tt_load("2021-05-18")
+
+```
+
+
+# Readme
+
+Take a look at the readme for the weekly data to get insight on the dataset.
+This includes a data dictionary, source, and a link to an article on the data.
+
+```{r Readme, eval = interactive()}
+
+tt
+
+```
+
+
+# Glimpse Data
+
+Take an initial look at the format of the data available.
+
+```{r Glimpse}
+
+tt %>% 
+  map(glimpse)
+
+```
+
+# Wrangle
+
+Explore the data and process it into a nice format for plotting! Access each dataset by name by using a dollarsign after the `tt` object and then the name of the data set.
+
+```{r Wrangle}
+
+survey <- tt[[1]]
+
+survey %>% glimpse()
+
+survey %>%
+    mutate(age = how_old_are_you,
+           annual_income = sum(annual_salary))
+
+survey %>% skim()
+
+# Using `sort`, `weight` and `name` in count (sum `weight` instead of number)
+
+survey %>%
+    count(job_title,
+          sort = TRUE)
+
+survey %>%
+    count(years_of_experience_in_field,
+          sort = TRUE)
+
+survey %>%
+    count(country, 
+          sort = TRUE)
+
+survey %>%
+    count(
+        industry,
+        sort = TRUE
+    )
+
+# Mutate within a count or group_by
+survey %>%
+    count(
+        salary_brackets = 10000 * (annual_salary %/% 10000),
+        sort = TRUE
+    )
+
+# Use add_count to create a count column to filter by:
+common_jobs <- survey %>%
+    add_count(job_title) %>%
+    filter(n > 50) %>%
+    filter(annual_salary > 10000) %>%
+    filter(country %in% c("United States", "USA", "US", "U.S.", "United States of America", "Usa")) 
+
+# Summarising the results of 100's of t-tests
+common_jobs %>%
+    group_by(job_title) %>%
+    summarize(t_test = list(t.test(annual_salary))) %>%
+    mutate(tidied = map(t_test, tidy)) %>%
+    unnest(tidied) %>%
+    filter(p.value <= 0.01) %>%
+    
+    mutate(job_title =  job_title %>% as_factor()) %>%
+    mutate(job_title = fct_reorder(job_title, estimate)) %>%
+    # mutate(estimate = scales::dollar(estimate)) %>%
+    # mutate(feature = fct_reorder(feature, !! feature_expr))
+    arrange(desc(estimate)) %>%
+    
+    ggplot(aes(estimate, job_title)) +
+    geom_point() +
+    geom_errorbarh(aes(xmin = conf.low,
+                       xmax = conf.high)) +
+    labs(
+        title = "2021 Ask a Manager Salary Survey - US Participants",
+        y = "",
+        x = "Total Annual Income (USD)",
+        caption = "https://www.askamanager.org/2021/04/how-much-money-do-you-make-4.html") 
+    
+# See also Chapter 25 in R for Data Science
+# ?broom::tidy
+
+industry <- survey %>%
+    group_by(industry) %>%
+    summarize(avg_income = mean(annual_salary))
+
+common_jobs %>%
+    View()
+
+# Using a column plot sorted by column of interest
+# Horizontal bar plot
+common_jobs %>%
+    group_by(job_title) %>%
+    summarize(t_test = list(t.test(annual_salary))) %>%
+    mutate(tidied = map(t_test, tidy)) %>%
+    unnest(tidied) %>%
+    filter(p.value <= 0.01) %>%
+    mutate(job_title =  job_title %>% as_factor()) %>%
+    mutate(job_title = fct_reorder(job_title, estimate)) %>%
+    ggplot(aes(job_title, estimate, )) +
+    geom_col() +
+    coord_flip()
+
+# Combining less common groups into an `other` group
+common_jobs %>%
+    mutate()
+
+survey %>%
+    count(
+        salary_brackets = 10000 * (annual_salary %/% 10000),
+        sort = TRUE
+    ) %>%
+    mutate(salary_brackets = fct_lump(as_factor(salary_brackets), 10),
+           salary_brackets = fct_reorder(salary_brackets, n))
+
+# Plot data on a log-normal scale.  A lot of real world data is log normal
+# See plastic waste correlation with country income C02 emissions
+common_jobs %>% 
+    mutate(job_title = fct_lump(job_title, 11),
+           job_title = fct_reorder(job_title, annual_salary)) %>%
+    ggplot(aes(job_title, annual_salary)) +
+    geom_boxplot() +
+    coord_flip() +
+    scale_y_log10() +
+    labs(
+        title = "Annual Salary for Top 10 Most Common Job Titles in the US",
+        x = "Annual Salary (USD)",
+        y = "Job Title"
+    )
+
+# Create a tibble with a every combination of vectors
+# crossing is more convenient than expand.grid
+# Doesn't convert strings to factors
+# Show mathematical curves.  Example: See Dog Breeds #tidytuesday
+
+crossing(name_total = c(100, 200, 300),
+         breed_total = seq(200, 1000, 25)) %>%
+    mutate(max_p_value = 1 - phyper(0, name_total,
+                                    total_dogs - name_total,
+                                    breed_total)) %>%
+    ggplot(aes(breed_total, max_p_value, color = factor(name_total))) +
+    geom_line()
+
+# Use crossing alongside augment from broom
+# See NFL players #tidytuesday
+mod <- first_three_seasons %>%
+    glm(had_second_season ~ season1 * year,
+        data = .,
+        family = "binomial")
+
+new_data <- crossing(
+    year = 1990:2018,
+    season1 = seq(6,9)
+)
+
+mod %>%
+    augment(newdata = new_data, type.predict = "response") %>%
+    ggplot(aes(year, .fitted, color = factor(season1))) +
+    geom_line()
+
+
+# Tidy Simulation
+# Create all combinations of possible combinations and doing calculations with those
+# Commuting and rains
+# See Blog post here: http://varianceexplained.org/r/cranberry-sauce/
+simulations <- crossing(trial = 1:1e5,
+                        weekday = 1:5,
+                        commute = c("Morning", "Evening")) %>%
+    arrange(trial, weekday, desc(commute)) %>%
+    mutate(rain = rbinom(n(), 1, ifelse(commute == "Morning", .5, .4)),
+           home_change = case_when(
+               commute == "Morning" & rain ~ -1,
+               commute == "Evening" & rain ~ 1,
+               TRUE ~ 0),
+           office_change = -home_change) %>%
+    group_by(trial) %>%
+    mutate(home = 2 + cumsum(home_change),
+           office = 1 + cumsum(office_change))
+
+
+# Tidy R
+# Separate data in columns
+
+# Extract
+# See Bob Ross Episode #tidytuesday
+
+common_jobs %>% glimpse()
+
+#Example.  Using convert = TRUE to format columns
+bob_ross %>%
+    extract(episode, c("season", "episode_number"), "S(.*)E(.*)", convert = TRUE)
+```
+
+
+# Visualize
+
+Using your processed dataset, create your unique visualization.
+
+```{r Visualize}
+
+
+  
+```
+
+# Save Image
+
+Save your image for sharing. Be sure to use the `#TidyTuesday` hashtag in your post on twitter! 
+
+```{r}
+
+# This will save your most recent plot
+ggsave(
+  filename = "My TidyTuesday Plot.png",
+  device = "png")
+
+```

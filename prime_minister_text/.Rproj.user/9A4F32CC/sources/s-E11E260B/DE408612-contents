@@ -1,0 +1,339 @@
+---
+title: "Class Imbalance - Julia SIlge"
+author: "Matt Rosinski"
+date: '`r Sys.Data()`'
+output: html_document
+---
+
+How to Select the Best Model Metric For Your Goal.  When predicting aircraft damage after bird strike incidents using a Kaggle dataset Julia Silge discovered that building a competition winning model and one that would be more useful in practice can be two different things.  
+
+Noticing that only 8.6% of bird strikes resulted in aircraft damage Julia stratified her training data to increase her model's sensitivity for predicting cases when damage occurred.  Higher sensitivity equates to a model that is better at predicting positive cases of damage.  In the case of aircraft damage using this metric makes sense for obvious reasons.  The competition, however, measured success by how low another metric was (mean log loss).  As you can see from the plot below, a more sensitive model is achieved using a balanced training set (and a higher mean log loss).
+
+Julia didn't win this particular Sliced competition but she provides a fantastic review of the rationale for accounting for class imbalance in her recent Youtube video (link provided in comments below).
+
+Here is a link to the competition and dataset: https://www.kaggle.com/greenrmp/bird-strike-data-analysis
+
+Link to Julia's recent video: https://youtu.be/7qIg-40rNbo
+
+alt = "Flipped bar chart of bagged decision tree model metrics for predicting aircraft damage after a bird strike.  The metrics for the model built with imbalanced data were slightly better than the model that used a balanced train data set except for one key metric.  The balanced model had significantly higher sensitivity which is the ability of the model to positively predict aircraft damage.  In this case, the cost of a false negative greatly outweighs the cost of a false positive.  Here is a link to the competition and dataset: https://www.kaggle.com/greenrmp/bird-strike-data-analysis"
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = TRUE, echo = TRUE, cache.lazy = FALSE,  warning = FALSE,
+                      message = FALSE, dpi = 180, fig.width = 8, fig.height = 5)
+
+library(tidyverse)
+library(tidymodels)
+library(skimr)
+library(GGally)
+library(themis)
+library(parallel)
+library(esquisse)
+theme_set(theme_minimal())
+```
+
+## EDA
+
+```{r}
+train_raw <- read_csv("../sliced-s01e02-bird-strikes/train.csv", guess_max = 1e5) %>%
+  mutate(damaged = case_when(damaged > 0 ~ "damage",
+                             TRUE ~ "no damage"))
+test_raw <- read_csv("test.csv", guess_max = 1e5)
+```
+
+```{r}
+train_raw %>% glimpse()
+train_raw %>% skim()
+
+```
+
+## Visualise numeric relationships
+```{r}
+
+train_raw %>%
+  select(damaged, incident_year, height, speed, distance) %>%
+  ggpairs(columns = 2:5, aes(color = damaged, alpha = 0.5))
+```
+
+## Visualise nominal relationships for classification modeling
+```{r}
+train_raw %>%
+  select(damaged, precipitation, visibility, engine_type,
+         flight_impact, flight_phase, species_quantity) %>%
+  pivot_longer(cols = precipitation:species_quantity) %>%
+  ggplot(aes(y = value, fill = damaged)) +
+  geom_bar(position = "fill") +
+  facet_wrap(vars(name), scales = "free") +
+  labs(x = NULL, y = NULL, fill = NULL)
+```
+
+NAs contain information so should no be removed
+
+# Prepare folds and metrics
+```{r}
+
+set.seed(123)
+bird_folds <- vfold_cv(train_raw, v = 5, strata = damaged)
+
+bird_folds
+
+small_folds <- sample_n(
+  train_raw, 
+  size = 2000, 
+  replace = TRUE) %>% 
+  vfold_cv(10, strata = damaged)
+small_folds
+
+# Inspect analysis dataframe within a split
+small_folds$splits[[1]] %>% analysis() %>% glimpse()
+
+# Inspect assessment dataframe within a split
+small_folds$splits[[1]] %>% assessment() %>% glimpse()
+
+
+bird_metrics <- metric_set(mn_log_loss, accuracy, sensitivity, specificity)
+```
+
+# Prepare data
+```{r}
+bird_df <- train_raw %>%
+  select(damaged, flight_impact, precipitation,
+         visibility, flight_phase, engines, incident_year,
+         incident_month, species_id, engine_type,
+         aircraft_model, species_quantity, height, speed)
+```
+
+# Prepare recipe
+## step_novel in the test set if there is new level it will assign it to this new level
+## step_other collapses the infrequently occurring category into an "other" category
+## step_unknown instead of throwing away NAs or imputing them we assign an unknown category
+```{r}
+bird_recipe <- recipe(damaged ~ ., data = bird_df) %>%
+  step_novel(all_nominal_predictors()) %>%
+  step_other(all_nominal_predictors(), threshold = 0.01) %>%
+  step_unknown(all_nominal_predictors()) %>%
+  step_impute_median(all_numeric_predictors()) %>%
+  step_zv(all_predictors())
+
+bird_recipe
+```
+
+# Inspect data through recipe
+```{r}
+bird_recipe %>% prep() %>% juice()
+```
+
+```{r}
+bird_df %>% 
+  count(damaged, sort = TRUE) %>%
+  mutate(pct = n/sum(n))
+```
+
+# Build a model
+```{r}
+library(baguette)
+
+bag_spec <- 
+  bag_tree(min_n = 10) %>%
+  set_engine("rpart", times = 25) %>%
+  set_mode("classification")
+```
+
+```{r}
+imbalanced_wflw <- 
+  workflow() %>%
+  add_recipe(bird_recipe) %>%
+  add_model(bag_spec)
+
+fit(imbalanced_wflw, data = bird_df)
+```
+
+# Resample and compare models
+
+```{r}
+doParallel::registerDoParallel()
+set.seed(123)
+imbalanced_results <- 
+  fit_resamples(
+    imbalanced_wflw,
+    resamples = bird_folds,
+    metrics = bird_metrics
+  )
+
+collect_metrics(imbalanced_results)
+```
+
+## This results in low sensitivity, ie does a poor job of predicting damage accurately
+
+## step_smote 
+Generates new examples of the minority classes using nearest neighbours of these cases (upsample)
+## step_downsample 
+Removes rows of a dataset to make the occurrence of a specific factor level equal
+```{r}
+library(themis)
+
+balanced_recipe <- bird_recipe %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_smote(damaged) 
+  
+balanced_wflw <- 
+  workflow() %>%
+  add_recipe(balanced_recipe) %>%
+  add_model(bag_spec)
+
+set.seed(123)
+balanced_results <- 
+  fit_resamples(
+    balanced_wflw,
+    resamples = bird_folds,
+    metrics = bird_metrics
+  )
+
+collect_metrics(balanced_results)
+```
+
+```{r}
+balanced_results %>% autoplot()
+```
+
+# Conclusions
+The balanced model performs far better for predicting the rare event of damage from
+bird strike at the expense of a little overall accuracy and specificity.
+
+The cost of predicting no damage is minimal whereas the cost of damage is far greater
+
+# Model Comparison
+```{r}
+
+bal_metrics_tbl <- collect_metrics(balanced_results) %>%
+  mutate(type = "Balanced")
+
+imbal_metric_tbl <- collect_metrics(imbalanced_results) %>%
+  mutate(type = "Imbalanced")
+
+compare_metrics_tbl <- 
+  bal_metrics_tbl %>%
+  bind_rows(imbal_metric_tbl)
+
+compare_metrics_tbl %>%
+  mutate(.metric = str_to_title(.metric)) %>%
+  group_by(.metric) %>%
+  pivot_longer(mean) %>%
+  ggplot(aes(.metric, value, fill = type)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  facet_wrap(~.metric)
+
+?roc_auc()
+
+```
+
+# Setup for Workflowset
+```{r}
+# Recipes
+bird_recipe %>% prep() %>% juice()
+
+balanced_recipe %>% prep() %>% juice()
+
+# Models
+model_bag_spec <- 
+  bag_tree(min_n = 10) %>%
+  set_engine("rpart", times = 25) %>%
+  set_mode("classification")
+
+model_xgboost_spec <- 
+  boost_tree(
+    min_n = tune(),
+    trees = 400,
+    learn_rate = tune()) %>%
+  set_engine("xgboost") %>%
+  set_mode("classification")
+
+# Resamples
+bird_folds
+small_folds
+
+# Metrics
+# m_set <- metric_set(sensitivity)
+
+# Combine with Workflow sets
+# Preprocessors can be formulas, tidy select in addition to recipes
+wflw_setup <- workflow_set(
+  preproc = list(
+    Balanced = balanced_recipe,
+    Imbalanced = bird_recipe
+  ),
+  models = list(
+    bagged_decision_tree = model_bag_spec
+    # xgboost              = model_xgboost_spec
+  ),
+  cross = TRUE
+)
+
+wflw_setup
+
+
+# cores <- parallel::detectCores(logical = FALSE)
+# cores
+# clusters <- parallel::makePSOCKcluster(cores)
+doParallel::registerDoParallel()
+
+```
+
+# Run Workflowset tuning
+```{r}
+
+set.seed(2021)
+if(exists("wflwset_tune_results")) rm("wflwset_tune_results")
+wflwset_tune_results <- wflw_setup %>%
+  workflow_map(
+    # fn = "tune_race_anova",
+    fn = "fit_resamples",
+    # fn = "tune_grid",
+    resamples = small_folds,
+    # grid = 15,
+    metrics = metric_set(mn_log_loss, accuracy, sensitivity, specificity),
+    verbose = TRUE
+  )
+
+doParallel::stopImplicitCluster()
+```
+
+# Save tuning results
+```{r}
+wflwset_tune_results <- saveRDS(wflwset_tune_results, "results/wflwset_tune_results.rds")
+
+```
+
+# Visually compare models
+```{r}
+?autoplot.workflow_set
+
+wflwset_tune_results %>% 
+  autoplot() %>%
+  scale_color_brewer(palette = "Dark2") +
+  theme_light()
+
+```
+
+```{r}
+esquisser()
+
+library(ggplot2)
+compare_metrics_tbl %>% 
+mutate(.metric = str_to_title(.metric)) %>%
+ggplot(
+ aes(x = .metric, fill = type, weight = mean)) +
+ geom_bar(position = "dodge") +
+ scale_fill_brewer(palette = "Paired", direction = 1) +
+ labs(x = "Model Metric", y = "Value", title = "How to Select the Best Model Metric (Even Your Data is a Bit Wonky)", 
+ subtitle = "Predicting Aircraft Damage After Bird Strike Incidents - Bagged Decision Tree Model", caption = "Link to competition and dataset: https://www.kaggle.com/greenrmp/bird-strike-data-analysis", 
+ fill = "Preprocessing") +
+ coord_flip() +
+ ggthemes::theme_economist_white() +
+ theme(
+   axis.title.x = element_text(family = "sans", size = 15, margin=margin(10,0,0,0)),
+   axis.title.y = element_text(family = "sans", size = 15, margin=margin(10,10,0,0)),
+   plot.title = element_text(family = "sans", size = 18, margin=margin(0,0,10,0))
+ )  
+
+```
+

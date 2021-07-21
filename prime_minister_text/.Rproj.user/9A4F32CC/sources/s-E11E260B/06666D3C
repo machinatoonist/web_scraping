@@ -1,0 +1,26 @@
+{
+    "id": "06666D3C",
+    "path": "~/Documents/github/mlmondays/wind_turbines_ML.Rmd",
+    "project_path": null,
+    "type": "r_markdown",
+    "hash": "0",
+    "contents": "",
+    "dirty": false,
+    "created": 1626609775182.0,
+    "source_on_save": false,
+    "relative_order": 14,
+    "properties": {
+        "source_window_id": "",
+        "Source": "Source",
+        "cursorPosition": "217,2",
+        "scrollLine": "210"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 1624151822,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1624151822,
+    "read_only": false,
+    "read_only_alternatives": []
+}
