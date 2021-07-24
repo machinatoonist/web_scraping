@@ -1,15 +1,12 @@
 # LIBRARIES ----
 
-library(tidyverse) # Main Package - Loads dplyr, purrr
-library(rvest)     # HTML Hacking & Web Scraping
-library(furrr)     # Parallel Processing using purrr (iteration)
-library(fs)        # Working with File System
+library(tidyverse) # Main Package - Loads dplyr, purrr, rvest, stringr, tidyr, forcats
 library(tidytext)
-library(stringr)
-library(tidyr)
+library(lubridate)
+
 library(forcats)
 library(timetk)
-library(lubridate)
+
 library(scales)
 
 # How to analyse 2.2 million words from 786 different speeches and interviews
@@ -37,6 +34,8 @@ url <- "https://www.pm.gov.au/media/press-conference-kirribilli-nsw-"
 
 pm_kirribilli_press_conference_pages <- tibble(page_num = 1:7)
 
+
+
 # Press releases to scrape ----
 pm_kirribilli_press_conference_pages <- pm_kirribilli_press_conference_pages %>%
     mutate(page = paste0(url, page_num,"/"))
@@ -57,11 +56,11 @@ media_pages <- tibble(page_num = 0:108) %>%
 # Create a function to get links ----
 get_link_df <- function (page) {
 
-    content <- read_html(page)
+    content <- rvest::read_html(page)
 
     title <- content %>%
-        html_nodes(".media-title a") %>%
-        html_text()
+        rvest::html_nodes(".media-title a") %>%
+        rvest::html_text()
 
     date <- content %>%
         html_nodes(".date-display-single") %>%
@@ -89,10 +88,11 @@ page = "https://www.pm.gov.au/media?page=0"
 
 view_links <- get_link_df(page)
 
-# Run Query (long running so commented out)
+# Run Query (long running) ----
 all_pm_media_blurbs <- media_pages %>%
     mutate(link_df = map(page, get_link_df))
 
+# Unnest media blurbs ----
 pm_media_unnested <- all_pm_media_blurbs %>%
     unnest(cols = link_df)
 
@@ -122,8 +122,10 @@ content %>%
 # Create a function to scrape text ----
 
 library(progress)
-pb <- progress_bar$new(total = nrow(pm_media_unnested),
-                       format = "executing [:bar] :percent eta::eta")
+
+# Using the progress bar caused an error for me so commented out
+# pb <- progress_bar$new(total = nrow(pm_media_unnested),
+#                        format = "executing [:bar] :percent eta::eta")
 
 all_pm_transcripts <- function(page) {
 
@@ -159,18 +161,21 @@ test_extract <- pm_media_unnested %>%
     mutate(accessed = Sys.Date())
 
 test_extract %>% glimpse()
+
 {
 pm_text_extract <- pm_media_unnested %>%
-    # slice_head(n = 5) %>%
+    # slice_head(n = 5) %>%  # Use slice for checking output
     mutate(extract = map(value, all_pm_transcripts))
 
 pm_text_extract_flat_df <- pm_text_extract %>%
     unnest(extract) %>%
     mutate(accessed = Sys.Date())
 
+# Save extracted data ----
 write_csv(pm_text_extract_flat_df, "pm_text_extract.csv")
 }
 
+# Preliminary analysis and cleaning ----
 pm_text_extract_flat_df %>%
     count(type, sort = TRUE)
 
@@ -254,8 +259,15 @@ pm_sentiment %>%
 pm_sentiment %>%
     plot_time_series(.date_var = date,
                      .value = sentiment,
-                     .title = "Australian Prime Minister Sentiment on the Public Record"
-                     )
+                     .title = "Australian Prime Minister Sentiment on the Public Record",
+                     .smooth_period = "3 month",
+                     .y_lab = "Sentiment",
+                     .interactive = FALSE,
+                     .y_intercept = 0, .smooth_color = "dodgerblue"
+                     ) +
+    labs(subtitle = "Sentiment lexicon from Bing Liu and collaborators") +
+    geom_bar(stat = "identity", show.legend = FALSE)
+
 
 pm_sentiment_words <- text_extract_clean %>%
     inner_join(get_sentiments("bing")) %>%
@@ -285,7 +297,13 @@ speech_words <- text_extract_clean %>%
     filter(!(word %in% c("premier", "inaudible", "journalist",
                          "15th", "19", "760,000", "leigh",
                          "speaker", "deb", "fiona", "paul",
-                         "kylie", "mark", "july", "friday"))) %>%
+                         "kylie", "mark", "july", "friday",
+                         "australian", "people", "world",
+                         "government", "countries", "australia",
+                         "issues", "country", "australians",
+                         "minister", "prime", "south", "wales",
+                         "queensland", "victoria"
+                         ))) %>%
     count(month, word, sort = TRUE)
 
 total_words <-  speech_words %>%
@@ -330,3 +348,65 @@ speech_words_join %>%
     group_by(value) %>%
     top_n(5)
 
+# For machine learning with text it is common to use a document term matrix
+# Topic model ----
+    # tm, quanteda
+library(stm)
+library(quanteda)
+
+pm_dfm <- text_extract_clean %>%
+    mutate(month = lubridate::floor_date(date, "month")) %>%
+    filter(!(word %in% c("premier", "inaudible", "journalist",
+                         "15th", "19", "760,000", "leigh",
+                         "speaker", "deb", "fiona", "paul",
+                         "kylie", "mark", "july", "friday",
+                         "australian", "people", "world",
+                         "government", "countries", "australia",
+                         "issues", "country", "australians",
+                         "minister", "prime", "south", "wales",
+                         "queensland", "victoria", "canberra",
+                         "sydney", "adelaide", "brisbane",
+                         "states", "acknowledge", "ngunnawal",
+                         "it’s", "day", "queenslanders"))) %>%
+    count(value, word, sort = TRUE) %>%
+    cast_dfm(value, word, n)
+
+topic_model <- stm(pm_dfm, K = 12, init.type = "Spectral")
+summary(topic_model)
+
+td_beta <- tidy(topic_model)
+
+td_beta %>%
+    group_by(topic) %>%
+    top_n(10) %>%
+    ungroup %>%
+    mutate(term = reorder(term, beta)) %>%
+    ggplot(aes(term, beta, fill = topic)) +
+    geom_col(show.legend = FALSE) +
+    facet_wrap(~topic, scales = "free", ) +
+    coord_flip() +
+    theme_light() +
+    theme(axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),
+          strip.background = element_rect(fill = "white"),
+          strip.text = element_text(colour = "black")) +
+    labs(
+        title = "Topic Modeling from Australian Prime Ministerial Speechs and Interviews: 2020-21",
+        subtitle = "Which words contribute most to which topics",
+        y = "Term",
+        x = "Beta"
+    )
+
+td_gamma <- tidy(topic_model, matrix = "gamma",
+                 document_names = rownames(pm_dfm))
+
+td_gamma %>%
+    ggplot(aes(gamma, fill = as.factor(topic))) +
+    geom_histogram(show.legend = FALSE) +
+    facet_wrap(~topic, ncol = 3) +
+    scale_y_log10() +
+    labs(
+        title = "Topic Modeling",
+        subtitle = "How likely is that a speech will belong to this topic",
+        x = "Probability that speeches or interviews will be related to topics"
+    )
